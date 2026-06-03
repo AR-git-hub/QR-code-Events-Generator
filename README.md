@@ -146,13 +146,21 @@ MAKE_RELEASE_ZIP_WINDOWS.bat
 
 Если перед сборкой был создан `dist\qr-ticket-validator-debug.apk`, APK приложения проверяющего тоже попадет в архив.
 
+## Требования
+
+- Python 3.9 или новее.
+- Windows (для `.bat`-скриптов). На Linux/macOS запускайте `python -m bot` напрямую после создания `.env`.
+
 ## Структура проекта
 
 - `bot/app.py` - Telegram-бот и HTTP webhook-сервер.
+- `bot/config.py` - загрузка настроек из `.env`.
 - `bot/payments.py` - тестовый и YooKassa-провайдеры оплаты.
 - `bot/database.py` - заказы, база SQLite, резервирование QR.
 - `bot/qr_tickets.py` - выдача и генерация QR.
 - `bot/tariffs.py` - тарифы и цены.
-- `scripts/` - запуск, проверка, остановка, сборка релиза.
+- `bot/admin_tools.py` - экспорт базы и создание бесплатных QR.
+- `scripts/` - PowerShell-скрипты запуска, остановки, сборки релиза.
 - `validator_app/` - Android-приложение проверяющего.
 - `docs/` - инструкции для передачи, проверки QR и подключения оплаты.
+- `data/qr_pool.example.json` - пример пула QR-кодов (скопируйте в `data/qr_pool.json`).

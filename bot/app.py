@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -118,6 +119,11 @@ async def run() -> None:
     dispatcher = Dispatcher()
     router = Router()
 
+    _order_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_order_lock(order_id: str) -> asyncio.Lock:
+        return _order_locks.setdefault(order_id, asyncio.Lock())
+
     async def send_ticket(order: Order) -> None:
         ticket_code, image_path = ticket_issuer.issue_for_order(order)
         tariff = get_tariff(order.tariff_key)
@@ -137,36 +143,42 @@ async def run() -> None:
         payment_status: PaymentStatus,
         query: CallbackQuery | None = None,
     ) -> None:
-        if order.status == "paid":
-            if order.qr_image_path:
-                await bot.send_photo(
-                    chat_id=order.user_id,
-                    photo=FSInputFile(order.qr_image_path),
-                    caption="Этот заказ уже оплачен. Отправляю QR-код повторно.",
+        async with _get_order_lock(order.id):
+            # Re-fetch to get the definitive status after acquiring the lock,
+            # so two concurrent webhook/button calls can't both issue a ticket.
+            fresh = database.get_order(order.id)
+            if fresh is None:
+                return
+            if fresh.status == "paid":
+                if fresh.qr_image_path:
+                    await bot.send_photo(
+                        chat_id=fresh.user_id,
+                        photo=FSInputFile(fresh.qr_image_path),
+                        caption="Этот заказ уже оплачен. Отправляю QR-код повторно.",
+                    )
+                if query:
+                    await query.answer("QR-код уже был выдан")
+                return
+
+            if not payment_status.paid:
+                if query:
+                    await query.answer("Оплата пока не найдена", show_alert=True)
+                return
+
+            if payment_status.amount_kopecks != fresh.amount_kopecks:
+                logger.warning(
+                    "Payment amount mismatch: order=%s expected=%s got=%s",
+                    fresh.id,
+                    fresh.amount_kopecks,
+                    payment_status.amount_kopecks,
                 )
-            if query:
-                await query.answer("QR-код уже был выдан")
-            return
+                if query:
+                    await query.answer("Сумма оплаты не совпала с заказом", show_alert=True)
+                return
 
-        if not payment_status.paid:
+            await send_ticket(fresh)
             if query:
-                await query.answer("Оплата пока не найдена", show_alert=True)
-            return
-
-        if payment_status.amount_kopecks != order.amount_kopecks:
-            logger.warning(
-                "Payment amount mismatch: order=%s expected=%s got=%s",
-                order.id,
-                order.amount_kopecks,
-                payment_status.amount_kopecks,
-            )
-            if query:
-                await query.answer("Сумма оплаты не совпала с заказом", show_alert=True)
-            return
-
-        await send_ticket(order)
-        if query:
-            await query.answer("Оплата подтверждена")
+                await query.answer("Оплата подтверждена")
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -322,8 +334,8 @@ async def run() -> None:
         bot=bot,
         database=database,
         payment_provider=payment_provider,
-        ticket_issuer=ticket_issuer,
         settings=settings,
+        fulfill_paid_order=fulfill_paid_order,
     )
     runner = web.AppRunner(web_app)
     await runner.setup()
@@ -346,8 +358,8 @@ def build_web_app(
     bot: Bot,
     database: Database,
     payment_provider: PaymentProvider,
-    ticket_issuer: TicketIssuer,
     settings: Settings,
+    fulfill_paid_order: Callable[..., Awaitable[None]],
 ) -> web.Application:
     app = web.Application()
 
@@ -372,8 +384,6 @@ def build_web_app(
         if order is None:
             logger.warning("Webhook for unknown payment %s", payment_id)
             return web.json_response({"ok": True})
-        if order.status == "paid":
-            return web.json_response({"ok": True})
 
         if event == "payment.canceled":
             database.mark_canceled(order.id)
@@ -384,21 +394,7 @@ def build_web_app(
             return web.json_response({"ok": True})
 
         payment_status = await payment_provider.get_payment(str(payment_id))
-        if not payment_status.paid or payment_status.amount_kopecks != order.amount_kopecks:
-            logger.warning("Webhook payment check failed for order %s", order.id)
-            return web.json_response({"ok": True})
-
-        ticket_code, image_path = ticket_issuer.issue_for_order(order)
-        tariff = get_tariff(order.tariff_key)
-        await bot.send_photo(
-            chat_id=order.user_id,
-            photo=FSInputFile(image_path),
-            caption=(
-                f"Оплата подтверждена.\n\n"
-                f"Тариф: <b>{tariff.title}</b>\n"
-                f"Ваш билетный QR-код: <code>{ticket_code}</code>"
-            ),
-        )
+        await fulfill_paid_order(order=order, payment_status=payment_status)
         return web.json_response({"ok": True})
 
     app.router.add_get("/health", health)

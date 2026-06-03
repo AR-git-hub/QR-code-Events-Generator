@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import json
 import uuid
@@ -7,6 +8,8 @@ import uuid
 import qrcode
 
 from bot.database import Database, Order
+
+logger = logging.getLogger(__name__)
 
 
 class TicketIssuer:
@@ -48,6 +51,12 @@ class TicketIssuer:
 
     def _load_pool(self) -> None:
         if not self.pool_path.exists():
+            if not self.allow_dynamic_qr:
+                logger.warning(
+                    "QR pool file not found at '%s' and ALLOW_DYNAMIC_QR is disabled — "
+                    "first order without a pre-loaded code will raise RuntimeError",
+                    self.pool_path,
+                )
             return
 
         with self.pool_path.open("r", encoding="utf-8") as file:

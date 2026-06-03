@@ -1,0 +1,14 @@
+{
+  "light": [
+    "LIGHT-DEMO-0001",
+    "LIGHT-DEMO-0002"
+  ],
+  "basic": [
+    "BASIC-DEMO-0001",
+    "BASIC-DEMO-0002"
+  ],
+  "luxury": [
+    "LUXURY-DEMO-0001",
+    "LUXURY-DEMO-0002"
+  ]
+}
